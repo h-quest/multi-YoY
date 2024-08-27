@@ -67,8 +67,8 @@ def degradation_multi_year_on_year(energy_normalized, recenter=True,
                            suffixes=['', '_right'],
                            tolerance=pd.Timedelta('8D')
                            ).drop(['dt_shifted'], axis=1).dropna()
-        df['time_diff_years'] = (df.dt - df.dt_right).astype('timedelta64[s]') / 3600 / 8766
-        df_rd = df_rd.append(df)
+        df['time_diff_years'] = (df.dt - df.dt_right) / pd.Timedelta(hours=1) / 8766.0
+        df_rd = pd.concat([df_rd, df])
     df_rd = df_rd.reset_index(drop=True)
 
     ### Computing the YoY instances
