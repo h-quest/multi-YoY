@@ -22,8 +22,8 @@ import datetime as dt
 ### ---------------------------- FUNCTION ----------------------------- ### 
 ### ------------------------------------------------------------------- ###
 
-def degradation_multi_year_on_year(energy_normalized, recenter=True,
-                                   exceedance_prob=95, confidence_level=95):
+def degradation_multi_year_on_year(energy_normalized: pd.Series, recenter: bool = True,
+                                   exceedance_prob: int = 95, confidence_level: int = 95):
     
     """
     Calculate the multi-annual year-on-year performance loss rate from a normalized energy time series.
@@ -39,29 +39,31 @@ def degradation_multi_year_on_year(energy_normalized, recenter=True,
             and year-on-year degradation values.
     """
 
-    ### Pre-processing for PLR analysis pipeline
+    # Sort the index and reset column names
     energy_normalized = energy_normalized.sort_index()
     energy_normalized.name = 'energy'
     energy_normalized.index.name = 'dt'
 
-    ### Define the number of years for the multi-YoY analysis
-    max_year_diff = energy_normalized.index[-1].year - energy_normalized.index[0].year
+    # Calculate the number of years in the dataset
+    total_years = energy_normalized.index[-1].year - energy_normalized.index[0].year
 
-    ### Recentering data by renormalising to first year
+    # Renormalize to the median of the first year if 'recenter' is True
     if recenter:
-        start = energy_normalized.index[0]
-        one_year = start + pd.Timedelta(days=365)
-        renorm_factor = energy_normalized[start:one_year].median()
+        first_year_end = energy_normalized.index[0] + pd.Timedelta(days=365)
+        renorm_factor = energy_normalized.loc[:first_year_end].median()
     else:
         renorm_factor = 1.0
-    
+
+    # Normalize the energy series
+    energy_normalized = energy_normalized / renorm_factor
     energy_normalized = energy_normalized.reset_index()
-    energy_normalized['energy'] = energy_normalized['energy'] / renorm_factor
-    
-    ### Creating the dataset for multi-YoY comparisons 
+
+    # Create a DataFrame to store multi-annual Year-on-Year (YoY) instances
     df_rd = pd.DataFrame()
-    for i in np.array(range(1, max_year_diff+1)):
-        energy_normalized['dt_shifted'] = energy_normalized.dt + pd.DateOffset(years=i)
+
+    # Iterate over each year to calculate YoY degradation
+    for year_diff in range(1, total_years + 1):
+        energy_normalized['dt_shifted'] = energy_normalized.dt + pd.DateOffset(years=year_diff)
         df = pd.merge_asof(energy_normalized[['dt', 'energy']], energy_normalized,
                            left_on='dt', right_on='dt_shifted',
                            suffixes=['', '_right'],
@@ -69,31 +71,32 @@ def degradation_multi_year_on_year(energy_normalized, recenter=True,
                            ).drop(['dt_shifted'], axis=1).dropna()
         df['time_diff_years'] = (df.dt - df.dt_right) / pd.Timedelta(hours=1) / 8766.0
         df_rd = pd.concat([df_rd, df])
+    
     df_rd = df_rd.reset_index(drop=True)
-
-    ### Computing the YoY instances
     df_rd['yoy'] = 100.0 * (df_rd.energy - df_rd.energy_right) / (df_rd.time_diff_years)
     df_rd.index = df_rd.dt
     
     if df_rd.empty:
-        raise ValueError('No year-over-year aggregated data pairs found')
+        raise ValueError("No year-over-year aggregated data pairs found. Check the input data.")
     
-    ### Computing final PLR and bootstrap uncertainty
+    # Calculate the median Year-on-Year degradation and bootstrap confidence intervals
     yoy_result = df_rd['yoy'].dropna()
     Rd_pct = yoy_result.median()
+    
     n_samples = len(yoy_result)
     reps = 10000
-    bootstrapped_samples = np.random.choice(yoy_result, (n_samples, reps), replace=True)
-    median_bootstrapped = np.median(bootstrapped_samples, axis=0)
+    bootstrapped_medians = np.median(np.random.choice(yoy_result, (n_samples, reps), replace=True), axis=0)
+    
     half_ci_width = confidence_level / 2.0
-    Rd_CI = np.percentile(median_bootstrapped, [50 - half_ci_width, 50 + half_ci_width])
-    exceedance_level = np.percentile(median_bootstrapped, 100 - exceedance_prob)
+    Rd_CI = np.percentile(bootstrapped_medians, [50 - half_ci_width, 50 + half_ci_width])
+    exceedance_level = np.percentile(bootstrapped_medians, 100 - exceedance_prob)
 
+    # Collect additional calculation information
     calc_info = {
         'YoY_values': df_rd,
         'renormalizing_factor': renorm_factor,
-        'monte_carlo_medians': median_bootstrapped,
+        'monte_carlo_medians': bootstrapped_medians,
         'exceedance_level': exceedance_level
     }
 
-    return (Rd_pct, Rd_CI, calc_info, yoy_result)
+    return Rd_pct, Rd_CI, calc_info, yoy_result
